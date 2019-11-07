@@ -2,67 +2,97 @@ import Ember from 'ember';
 
 const { RehydrateBuilder } = Ember.__loader.require('@glimmer/runtime');
 
-RehydrateBuilder.prototype.__closeBlock = function __closeBlock() {
-  var currentCursor = this.currentCursor;
+RehydrateBuilder.prototype.clearMismatch = function(candidate) {
+  let current = candidate;
+  let currentCursor = this.currentCursor;
+  if (currentCursor !== null) {
+    let openBlockDepth = currentCursor.openBlockDepth;
+    if (openBlockDepth >= currentCursor.startingBlockDepth) {
+      while (current) {
+        if (isCloseBlock(current)) {
+          let closeBlockDepth = getBlockDepth(current);
+          if (openBlockDepth >= closeBlockDepth) {
+            // cleared up until the close but we haven't closed the current
+            // block unless we are above
+            currentCursor.openBlockDepth = closeBlockDepth;
+            break;
+          }
+        }
+        current = this.remove(current);
+      }
+    } else {
+      while (current !== null) {
+        current = this.remove(current);
+      }
+    }
+    // current cursor parentNode should be openCandidate if element
+    // or openCandidate.parentNode if comment
+    currentCursor.nextSibling = current;
+    // disable rehydration until we popElement or closeBlock for openBlockDepth
+    currentCursor.candidate = null;
+  }
+};
 
+RehydrateBuilder.prototype.__closeBlock = function __closeBlock() {
+  let { currentCursor } = this;
   if (currentCursor === null) return;
+
   // openBlock is the last rehydrated open block
-  var openBlockDepth = currentCursor.openBlockDepth;
+  let openBlockDepth = currentCursor.openBlockDepth;
+
   // this currently is the expected next open block depth
   this.blockDepth--;
-  var candidate = currentCursor.candidate;
 
-  // rehydrating
+  let { candidate } = currentCursor;
+
+  let isRehydrating = false;
+
   if (candidate !== null) {
+    isRehydrating = true;
 
-    if (isComment(candidate) && getCloseBlockDepth(candidate) === openBlockDepth) {
+    if (isCloseBlock(candidate) && getBlockDepth(candidate) === openBlockDepth) {
       currentCursor.candidate = this.remove(candidate);
       currentCursor.openBlockDepth--;
     } else {
+      // close the block and clear mismatch in parent container
+      // we will be either at the end of the element
+      // or at the end of our containing block
       this.clearMismatch(candidate);
+      isRehydrating = false;
     }
-    // if the openBlockDepth matches the blockDepth we just closed to
-    // then restore rehydration
   }
-  if (currentCursor.openBlockDepth === this.blockDepth) {
-    currentCursor.openBlockDepth--;
 
-    // ********
-    // This conditional is the only difference between what is shipped in Ember
-    // 3.4+ and this patch. The rest of the code is duplicated in order to be
-    // able to add this guard.
-    //
-    // In the case of `<p><div>foo</div><p>` being sent by the FastBoot during
-    // serialization, the browser "corrects" that invalid HTML into
-    // `<p></p><div>foo</div><p></p>`. Unfortunately, this correction does
-    // **not** move our serialization markers so we end up with
-    // `currentCursor.nextSibling` being `null` when we do not expect it.
-    //
-    // This guard allows us to avoid throwing an error (`this.remove(null)`
-    // errors). The next opcode that runs will detect that the
-    // `currentCursor.candidate` is not what it expects and it will call `.clearMismatch`
-    // removing the incorrect (browser corrected) DOM and leaving the app in a
-    // functional state.
-    if (currentCursor.nextSibling !== null) {
-      currentCursor.candidate = this.remove(currentCursor.nextSibling);
+  if (!isRehydrating) {
+    // check if nextSibling matches our expected close block
+    // if so, we remove the close block comment and
+    // restore rehydration after clearMismatch disabled
+    let nextSibling = currentCursor.nextSibling;
+    if (
+      nextSibling !== null &&
+      isCloseBlock(nextSibling) &&
+      getBlockDepth(nextSibling) === openBlockDepth
+    ) {
+      // restore rehydration state
+      let candidate = this.remove(nextSibling);
+      if (candidate === null) {
+        // there is nothing more in the current element
+        currentCursor.candidate = currentCursor.nextSibling = null;
+      } else {
+        currentCursor.candidate = candidate;
+        currentCursor.nextSibling = candidate.nextSibling;
+      }
+      currentCursor.openBlockDepth--;
     }
   }
 };
 
-function isComment(node) {
-  return node.nodeType === 8;
+function isCloseBlock(node) {
+  return node.nodeType === 8 && node.nodeValue.lastIndexOf('%-b:', 0) === 0;
 }
 
-function getCloseBlockDepth(node) {
-  let boundsDepth = node.nodeValue.match(/^%-b:(\d+)%$/);
-
-  if (boundsDepth && boundsDepth[1]) {
-    return Number(boundsDepth[1]);
-  } else {
-    return null;
-  }
+function getBlockDepth(node) {
+  return parseInt(node.nodeValue.slice(4), 10);
 }
-
 
 export default {
   initialize() {}
