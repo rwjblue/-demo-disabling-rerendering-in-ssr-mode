@@ -26,7 +26,7 @@ if (IS_BROWSER && REDEBUG) {
 }
 
 if (IS_BROWSER && typeof FastBoot === 'undefined' && REDEBUG) {
-  const target = document.querySelector('.application-outlet');
+  const target = document.querySelector('body');
   const observer = new MutationObserver(function detectMutation(mutations) {
     // check for removed target
     mutations.forEach(function narrowDOMMutation(mutation) {
